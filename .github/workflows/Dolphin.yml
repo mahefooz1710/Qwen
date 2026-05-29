@@ -171,11 +171,6 @@ jobs:
               echo "RCLONE_AVAILABLE=false" >> $GITHUB_ENV
             fi
           fi
-
-      # ────────────────────────────────────────────────────────
-      # STEP 7: CMake Configure
-      # [F1] CORRECT CMake flags: USE_X11, USE_WAYLAND, USE_SDL2
-      # ────────────────────────────────────────────────────────
       - name: Configure CMake (Skylake i3-6100 Optimized)        run: |
           mkdir build && cd build
 
