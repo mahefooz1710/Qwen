@@ -1,21 +1,3 @@
-# ==============================================================================
-# MAHEFOOZ1710 — Dolphin Emulator Full Build + Google Drive Auto-Upload
-# Hardware : Dell Optiplex 7050 SFF | i3-6100 (Skylake) | 8GB DDR4
-# OS Target: Ubuntu 22.04 LTS
-# Controller: Cosmic Byte Stelleris (SDL2 Rumble + ff-memless)
-#
-# FIXES APPLIED:
-# [C1] i965-va-driver → intel-media-va-driver (correct Gen9 driver)
-# [C2] qt6-wayland    → qt6-qpa-plugins (correct package name)
-# [C3] rclone base64  → printf pipe (multiline secret safe)
-# [M1] LTO OOM        → gold linker added (GCC LTO compatible)
-# [M2] fetch-depth: 1 → fetch-depth: 0 (submodule shallow clone fix)
-# [M3] gdrive: remote → auto-detect from rclone.conf (robust parsing)
-# [L1] libpugixml-dev → removed (Dolphin bundles its own)
-# [F1] USE_X11/USE_WAYLAND → CORRECT CMake vars (not ENABLE_*)
-# [F2] rclone test fail → fixed lsd command + robust remote detection
-# ==============================================================================
-
 name: MAHEFOOZ1710 Dolphin Skylake + GDrive Upload
 
 on:
