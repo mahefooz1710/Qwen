@@ -1,0 +1,231 @@
+# ==============================================================================
+# MAHEFOOZ1710 — Dolphin Emulator Full Build + Google Drive Auto-Upload
+# Hardware : Dell Optiplex 7050 SFF | i3-6100 (Skylake) | 8GB DDR4
+# OS Target: Ubuntu 22.04 LTS
+# Controller: Cosmic Byte Stelleris (SDL2 Rumble + ff-memless)
+# ==============================================================================
+
+name: MAHEFOOZ1710 Dolphin Skylake + GDrive Upload
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-dolphin:
+    name: Build Dolphin — Dell Optiplex 7050 i3-6100
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ────────────────────────────────────────────────────────
+      # STEP 1: System check
+      # ────────────────────────────────────────────────────────
+      - name: System Reality Check
+        run: |
+          echo "=========================================="
+          echo "  OS   : $(lsb_release -d | cut -f2)"
+          echo "  Cores: $(nproc)"
+          echo "  RAM  : $(free -h | awk '/^Mem/{print $2}')"
+          echo "=========================================="
+
+      # ────────────────────────────────────────────────────────
+      # STEP 2: Checkout Dolphin source
+      # ────────────────────────────────────────────────────────
+      - name: Checkout Dolphin Source
+        uses: actions/checkout@v4
+        with:
+          repository: 'dolphin-emu/dolphin'
+          submodules: recursive
+          fetch-depth: 0
+
+      # ────────────────────────────────────────────────────────
+      # STEP 3: Compiler tools
+      # ────────────────────────────────────────────────────────
+      - name: Install Compiler + Build Tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            gcc-12 g++-12 \
+            cmake ninja-build \
+            git build-essential pkg-config \
+            binutils-gold
+
+      # ────────────────────────────────────────────────────────
+      # STEP 4: Dependencies
+      # ────────────────────────────────────────────────────────
+      - name: Install FFmpeg Libraries
+        run: sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+
+      - name: Install Controller + Input Libraries
+        run: sudo apt-get install -y libsdl2-dev libsdl2-2.0-0 libevdev-dev libudev-dev libhidapi-dev
+
+      - name: Install Display Libraries
+        run: sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxi-dev libx11-xcb-dev
+
+      - name: Install Audio Libraries
+        run: sudo apt-get install -y libasound2-dev libpulse-dev
+
+      - name: Install Graphics Libraries
+        run: sudo apt-get install -y libgl1-mesa-dev libvulkan-dev libva-dev intel-media-va-driver
+
+      - name: Install Network + Compression Libraries
+        run: sudo apt-get install -y libcurl4-openssl-dev libmbedtls-dev libminiupnpc-dev libzstd-dev liblzo2-dev libbz2-dev
+
+      - name: Install Misc Libraries
+        run: sudo apt-get install -y libbluetooth-dev gettext
+
+      - name: Install Qt6 GUI
+        run: sudo apt-get install -y qt6-base-dev qt6-base-private-dev libqt6svg6-dev qt6-qpa-plugins
+
+      # ────────────────────────────────────────────────────────
+      # STEP 5: Rclone install
+      # ────────────────────────────────────────────────────────
+      - name: Install Rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          echo "rclone: $(rclone --version | head -1)"
+
+      # ────────────────────────────────────────────────────────
+      # STEP 6: Setup rclone → Google Drive
+      # ────────────────────────────────────────────────────────
+      - name: Setup Rclone for Google Drive
+        env:
+          RCLONE_CONFIG_BASE64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
+        run: |
+          if [ -z "$RCLONE_CONFIG_BASE64" ]; then
+            echo "WARNING: RCLONE_CONFIG_BASE64 secret set nahi hai!"
+            echo "RCLONE_AVAILABLE=false" >> $GITHUB_ENV
+          else
+            mkdir -p ~/.config/rclone
+            # Safe decoding for multiline secrets
+            printf '%s' "$RCLONE_CONFIG_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+            
+            # Detect remote name automatically
+            REMOTE_NAME=$(rclone listremotes | head -1 | tr -d ':')
+            
+            if [ -z "$REMOTE_NAME" ]; then
+              echo "ERROR: No remote found in rclone.conf"
+              echo "RCLONE_AVAILABLE=false" >> $GITHUB_ENV
+            else
+              echo "REMOTE_NAME=$REMOTE_NAME" >> $GITHUB_ENV
+              echo "Detected Remote: $REMOTE_NAME"
+
+              # Connection test
+              if rclone lsd "${REMOTE_NAME}:" --max-depth 1 2>/dev/null; then
+                echo "Google Drive connection: OK"
+                echo "RCLONE_AVAILABLE=true" >> $GITHUB_ENV
+              else
+                echo "WARNING: GDrive test failed"
+                echo "RCLONE_AVAILABLE=false" >> $GITHUB_ENV
+              fi
+            fi
+          fi
+
+      # ────────────────────────────────────────────────────────
+      # STEP 7: CMake Configure
+      # ────────────────────────────────────────────────────────
+      - name: Configure CMake (Skylake i3-6100 Optimized)
+        run: |
+          mkdir -p build && cd build
+
+          OPT_FLAGS="-O3 -march=skylake -mtune=skylake -pipe -fno-plt"
+
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DCMAKE_C_FLAGS="${OPT_FLAGS}" \
+            -DCMAKE_CXX_FLAGS="${OPT_FLAGS}" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=gold" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=gold" \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DENABLE_LTO=ON \
+            -DENABLE_X11=ON \
+            -DENABLE_WAYLAND=OFF \
+            -DENABLE_SDL=ON \
+            2>&1 | tee /tmp/cmake-configure.log
+
+          echo "CMake configure done."
+
+      # ────────────────────────────────────────────────────────
+      # STEP 8: Compile
+      # FIX: Limit jobs to 2 (-j2) because i3-6100 has only 2 cores + 8GB RAM.
+      # LTO consumes huge RAM. Parallel build might OOM kill the process.
+      # ────────────────────────────────────────────────────────
+      - name: Compile Dolphin
+        run: |
+          cd build
+          echo "Build starting... Limiting to 2 jobs for stability (LTO + 8GB RAM)"
+          ninja -j2
+          echo "Build complete!"
+
+      # ────────────────────────────────────────────────────────
+      # STEP 9: Package
+      # ────────────────────────────────────────────────────────
+      - name: Package Build
+        run: |
+          cd build
+          DESTDIR=${{ github.workspace }}/dolphin-install ninja install
+          cd ${{ github.workspace }}
+
+          BUILD_DATE=$(date +%Y%m%d)
+          TAR_NAME="dolphin-ubuntu22.04-skylake-i3-6100-${BUILD_DATE}.tar.gz"
+          
+          # Create tar from the install directory content
+          tar -czvf "$TAR_NAME" -C dolphin-install .
+
+          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+          echo "Package created: $TAR_NAME"
+
+      # ────────────────────────────────────────────────────────
+      # STEP 10: GitHub Artifacts backup
+      # ────────────────────────────────────────────────────────
+      - name: Upload to GitHub Artifacts (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dolphin-MAHEFOOZ1710-Skylake
+          path: ${{ env.TAR_NAME }}
+          retention-days: 30
+
+      # ────────────────────────────────────────────────────────
+      # STEP 11: Google Drive upload
+      # ────────────────────────────────────────────────────────
+      - name: Upload to Google Drive
+        if: env.RCLONE_AVAILABLE == 'true'
+        run: |
+          GDRIVE_FOLDER_ID="1H28ejDbHH8c_sRBq7tL4YxI6oOUmFgBr"
+          
+          echo "Uploading ${TAR_NAME} to Google Drive..."
+          echo "Remote: ${REMOTE_NAME}"
+          
+          # Note: rclone copy SOURCE DEST
+          # We are copying the local tar file to the specific folder ID
+          rclone copy "${{ env.TAR_NAME }}" \
+            "${REMOTE_NAME}:${GDRIVE_FOLDER_ID}" \
+            --progress \
+            --stats 30s \
+            --retries 3 \
+            --retries-sleep 10s
+
+          echo "Google Drive upload complete!"
+
+      - name: Skip GDrive
+        if: env.RCLONE_AVAILABLE == 'false'
+        run: |
+          echo "GDrive upload skipped."
+
+      # ────────────────────────────────────────────────────────
+      # STEP 12: Build Summary
+      # ────────────────────────────────────────────────────────
+      - name: Build Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║         MAHEFOOZ1710 DOLPHIN BUILD COMPLETE              ║"
+          echo "╠══════════════════════════════════════════════════════════╣"
+          echo "║  Package  : ${{ env.TAR_NAME }}"
+          echo "║  Compiler : GCC 12 + gold linker"
+          echo "║  Target   : Skylake i3-6100 (AVX2)"
+          echo "║  LTO      : ON (Compiled with -j2 for safety)"
+          echo "╚══════════════════════════════════════════════════════════╝"
+          
