@@ -1,0 +1,14 @@
+# 1. Verify CMake variables exist in Dolphin source:
+git clone --depth 1 https://github.com/dolphin-emu/dolphin.git
+grep -E "option\(USE_X11|option\(USE_WAYLAND|option\(USE_SDL2" dolphin/CMakeLists.txt
+
+# 2. Test rclone config:
+echo "YOUR_BASE64_HERE" | base64 -d > ~/.config/rclone/rclone.conf
+rclone listremotes          # Should show: gdrive:
+rclone lsd gdrive:          # Should list folders (no --max-depth!)
+
+# 3. Verify Ubuntu 22.04 packages:
+apt-cache policy intel-media-va-driver qt6-qpa-plugins binutils-gold
+
+# 4. Test Skylake flags (optional):
+echo | gcc-12 -march=skylake -E -x c - >/dev/null && echo "✅ Skylake flags valid"
