@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-MAHEFOOZ1710 TeachAddict — Ultimate Skylake Gaming Stack Compiler
-Version 30 — All 300 runtime, build, and integration bugs fixed.
-Production‑ready, CI/CD optimized, fully self‑healing.
-"""
-
 import argparse
 import json
 import logging
