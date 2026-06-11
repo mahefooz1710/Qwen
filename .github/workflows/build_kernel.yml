@@ -1,4 +1,4 @@
-name: 🔥 Mi A2 Ultimate Kernel – Safe Patch & Compile
+name: 🔥 Mi A2 Ultimate Kernel – All Patches or Fail
 
 on:
   workflow_dispatch:
@@ -26,85 +26,76 @@ jobs:
           wget -qO- $CLANG_URL | tar xz -C toolchain/clang
           wget -qO- $GCC32_URL | tar xz -C toolchain/gcc32
 
-      # Step 1: Clone PE kernel (full history) and LOS kernel (depth=1)
-      - name: 🌿 Clone Pixel Experience Kernel
+      - name: 🌿 Clone Pixel Experience Kernel (full history)
         run: git clone -b $PE_KERNEL_BRANCH $PE_KERNEL_REPO pe_kernel
 
       - name: 🌿 Clone LineageOS Kernel
         run: git clone --depth=1 -b $LOS_KERNEL_BRANCH $LOS_KERNEL_REPO kernel
 
-      # Step 2: Auto-extract patches – only for features that exist
-      - name: 🔍 Find & Extract Patches (BFQ, BBR, simple_ondemand)
+      - name: 🔍 Strictly Verify & Extract All 3 Patches
         working-directory: pe_kernel
         run: |
           mkdir -p ../patches
 
           # BFQ
           BFQ_COMMIT=$(git log --oneline --all --grep="bfq" -i | head -1 | awk '{print $1}')
-          if [ -n "$BFQ_COMMIT" ]; then
-            echo "✅ BFQ commit found: $BFQ_COMMIT"
-            git format-patch -1 $BFQ_COMMIT -o ../patches
-          else
-            echo "ℹ️ No BFQ commit found – BFQ will NOT be patched (runtime fallback mq-deadline)."
+          if [ -z "$BFQ_COMMIT" ]; then
+            echo "❌ ERROR: BFQ commit not found in PE kernel!"
+            exit 1
           fi
+          echo "✅ BFQ commit: $BFQ_COMMIT"
+          git format-patch -1 $BFQ_COMMIT -o ../patches
 
-          # TCP BBR
+          # BBR
           BBR_COMMIT=$(git log --oneline --all --grep="bbr" -i | head -1 | awk '{print $1}')
-          if [ -n "$BBR_COMMIT" ]; then
-            echo "✅ BBR commit found: $BBR_COMMIT"
-            git format-patch -1 $BBR_COMMIT -o ../patches
-          else
-            echo "ℹ️ No BBR commit found – BBR will NOT be patched (cubic default)."
+          if [ -z "$BBR_COMMIT" ]; then
+            echo "❌ ERROR: BBR commit not found in PE kernel!"
+            exit 1
           fi
+          echo "✅ BBR commit: $BBR_COMMIT"
+          git format-patch -1 $BBR_COMMIT -o ../patches
 
-          # msm_adreno_simple_ondemand
+          # simple_ondemand
           GPU_COMMIT=$(git log --oneline --all --grep="simple_ondemand" -i | head -1 | awk '{print $1}')
-          if [ -n "$GPU_COMMIT" ]; then
-            echo "✅ simple_ondemand commit found: $GPU_COMMIT"
-            git format-patch -1 $GPU_COMMIT -o ../patches
-          else
-            echo "ℹ️ No simple_ondemand commit found – GPU governor will remain msm-adreno-tz."
+          if [ -z "$GPU_COMMIT" ]; then
+            echo "❌ ERROR: simple_ondemand commit not found in PE kernel!"
+            exit 1
           fi
+          echo "✅ simple_ondemand commit: $GPU_COMMIT"
+          git format-patch -1 $GPU_COMMIT -o ../patches
 
-          echo "📁 Patches extracted (if any):"
-          ls -l ../patches/ 2>/dev/null || echo "(none)"
+          echo "📁 All 3 patches extracted successfully."
+          ls -l ../patches/
 
-      # Step 3: Apply patches STRICTLY – fail if any patch fails to apply
-      - name: 🩹 Apply Patches (strict mode)
+      - name: 🩹 Apply All Patches (strict – fail on any error)
         working-directory: kernel
         run: |
-          if ls ../patches/*.patch 1> /dev/null 2>&1; then
-            for patch in ../patches/*.patch; do
-              echo "🔍 Checking $patch ..."
-              if git apply --check "$patch"; then
-                echo "✅ Patch can be applied cleanly. Applying..."
-                git apply "$patch"
-                echo "✔️ Applied: $patch"
-              else
-                echo "❌ ERROR: Patch $patch does not apply cleanly!"
-                echo "👉 Please check the patch file and your kernel source."
-                exit 1
-              fi
-            done
-          else
-            echo "ℹ️ No patches to apply – continuing with stock source."
-          fi
+          for patch in ../patches/*.patch; do
+            echo "🔍 Checking $patch..."
+            if git apply --check "$patch"; then
+              echo "✅ Applying $patch"
+              git apply "$patch"
+            else
+              echo "❌ ERROR: Patch $patch cannot be applied cleanly."
+              exit 1
+            fi
+          done
+          echo "✔️ All patches applied successfully."
 
-      # Step 4: Optimised defconfig
       - name: ⚙️ Generate Fully Optimized Defconfig
         working-directory: kernel
         run: |
           make ARCH=arm64 O=out $DEFCONFIG
           cd out
 
-          # Try enabling patched features (will only take effect if patches applied)
-          scripts/config --enable CONFIG_IOSCHED_BFQ || true
-          scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq" || true
-          scripts/config --enable CONFIG_TCP_CONG_BBR || true
-          scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr" || true
-          scripts/config --enable CONFIG_MSM_ADRENO_SIMPLE_ONDEMAND || true
+          # Enable patched features – now guaranteed to exist
+          scripts/config --enable CONFIG_IOSCHED_BFQ
+          scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq"
+          scripts/config --enable CONFIG_TCP_CONG_BBR
+          scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
+          scripts/config --enable CONFIG_MSM_ADRENO_SIMPLE_ONDEMAND
 
-          # --- Safe & battery/performance tweaks (all safe) ---
+          # --- Safe & Battery/Performance Tweaks ---
           scripts/config --enable CONFIG_ZRAM
           scripts/config --enable CONFIG_ZRAM_LZ4_COMPRESS
           scripts/config --disable CONFIG_ZSWAP
@@ -133,7 +124,6 @@ jobs:
           cd ..
           make ARCH=arm64 O=out olddefconfig
 
-      # Step 5: Compile kernel
       - name: 🔨 Compile Kernel
         working-directory: kernel
         env:
@@ -146,63 +136,37 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             -j$(nproc --all)
 
-      # Step 6: Boot script with CPU/GPU/VM tuning + runtime fallback
-      - name: 📝 Create Complete Boot Tuning Script
+      - name: 📝 Create Boot Tuning Script
         run: |
           mkdir -p anykernel/ramdisk/overlay.d/sbin
           cat << 'BOOTTWEAK' > anykernel/ramdisk/overlay.d/sbin/jasmine_tweaks.sh
           #!/system/bin/sh
           until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
-
-          # ZRAM 1GB (25% of 4GB)
-          if [ -e /sys/block/zram0/disksize ]; then
-            echo 1073741824 > /sys/block/zram0/disksize
-          fi
-
-          # I/O scheduler: BFQ if available, else mq-deadline
+          # ZRAM 1GB
+          [ -e /sys/block/zram0/disksize ] && echo 1073741824 > /sys/block/zram0/disksize
+          # I/O: BFQ (guaranteed present)
           for dev in /sys/block/mmcblk*/queue; do
-            if grep -q bfq $dev/scheduler; then
-              echo bfq > $dev/scheduler
-            else
-              echo mq-deadline > $dev/scheduler
-            fi
+            echo bfq > $dev/scheduler 2>/dev/null
             echo 0 > $dev/iostats 2>/dev/null
             echo 64 > $dev/read_ahead_kb 2>/dev/null
           done
-
-          # Virtual Memory tuning
           echo 80 > /proc/sys/vm/vfs_cache_pressure
           echo 10 > /proc/sys/vm/dirty_ratio
           echo 5 > /proc/sys/vm/dirty_background_ratio
-
-          # Network TCP fastopen
           echo 3 > /proc/sys/net/ipv4/tcp_fastopen
-
-          # Disable gentle fair sleepers (UI smoother)
           echo NO_GENTLE_FAIR_SLEEPERS > /sys/kernel/debug/sched_features 2>/dev/null
-
-          # CPU Interactive Governor Tuning
-          for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-            echo interactive > $cpu 2>/dev/null
-          done
-
-          # Big cluster (cpu4-7) tuning
+          # CPU interactive governor tuning
+          for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo interactive > $cpu 2>/dev/null; done
           echo 90 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/go_hispeed_load 2>/dev/null
           echo 800000 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/hispeed_freq 2>/dev/null
           echo 20000 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/timer_rate 2>/dev/null
           echo 0 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/io_is_busy 2>/dev/null
-
-          # Little cluster (cpu0-3) tuning
           echo 85 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/go_hispeed_load 2>/dev/null
           echo 600000 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/hispeed_freq 2>/dev/null
           echo 30000 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/timer_rate 2>/dev/null
           echo 0 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/io_is_busy 2>/dev/null
-
-          # GPU min freq for smooth video (adjust if needed)
-          if [ -e /sys/class/kgsl/kgsl-3d0/min_pwrlevel ]; then
-            echo 3 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null  # ~266 MHz
-          fi
-
+          # GPU min freq
+          [ -e /sys/class/kgsl/kgsl-3d0/min_pwrlevel ] && echo 3 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
           exit 0
           BOOTTWEAK
           chmod +x anykernel/ramdisk/overlay.d/sbin/jasmine_tweaks.sh
@@ -216,7 +180,6 @@ jobs:
               start jtweak
           INITRC
 
-      # Step 7: Package into AnyKernel3 zip
       - name: 📦 Package with AnyKernel3
         run: |
           git clone --depth=1 $AK3_REPO anykernel_base
@@ -224,11 +187,11 @@ jobs:
           mkdir -p anykernel_base/ramdisk/overlay.d
           cp -r anykernel/ramdisk/overlay.d/* anykernel_base/ramdisk/overlay.d/ 2>/dev/null || true
           cd anykernel_base
-          zip -r9 ../MiA2_Ultimate_Kernel.zip *
+          zip -r9 ../MiA2_Ultimate_AllPatches_Kernel.zip *
           cd ..
 
-      - name: 📤 Upload Final Kernel Zip
-        uses: actions/upload-artifact@v3
+      - name: 📤 Upload Kernel Zip (v4)
+        uses: actions/upload-artifact@v4
         with:
-          name: MiA2_Ultimate_Kernel
-          path: MiA2_Ultimate_Kernel.zip
+          name: MiA2_Ultimate_AllPatches_Kernel
+          path: MiA2_Ultimate_AllPatches_Kernel.zip
