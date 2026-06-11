@@ -1,4 +1,4 @@
-name: 🔥 Mi A2 Ultimate Kernel Auto-Patch + Compile (Fixed)
+name: 🔥 Mi A2 Ultimate Kernel – Safe Patch & Compile
 
 on:
   workflow_dispatch:
@@ -33,52 +33,61 @@ jobs:
       - name: 🌿 Clone LineageOS Kernel
         run: git clone --depth=1 -b $LOS_KERNEL_BRANCH $LOS_KERNEL_REPO kernel
 
-      # Step 2: Auto-extract patches
-      - name: 🔍 Extract Patches (BFQ, BBR, simple_ondemand)
+      # Step 2: Auto-extract patches – only for features that exist
+      - name: 🔍 Find & Extract Patches (BFQ, BBR, simple_ondemand)
         working-directory: pe_kernel
         run: |
           mkdir -p ../patches
+
           # BFQ
           BFQ_COMMIT=$(git log --oneline --all --grep="bfq" -i | head -1 | awk '{print $1}')
           if [ -n "$BFQ_COMMIT" ]; then
-            echo "Found BFQ commit: $BFQ_COMMIT"
+            echo "✅ BFQ commit found: $BFQ_COMMIT"
             git format-patch -1 $BFQ_COMMIT -o ../patches
           else
-            echo "⚠️ No BFQ commit found; skipping BFQ patch."
+            echo "ℹ️ No BFQ commit found – BFQ will NOT be patched (runtime fallback mq-deadline)."
           fi
 
           # TCP BBR
           BBR_COMMIT=$(git log --oneline --all --grep="bbr" -i | head -1 | awk '{print $1}')
           if [ -n "$BBR_COMMIT" ]; then
-            echo "Found BBR commit: $BBR_COMMIT"
+            echo "✅ BBR commit found: $BBR_COMMIT"
             git format-patch -1 $BBR_COMMIT -o ../patches
           else
-            echo "⚠️ No BBR commit found; skipping BBR patch."
+            echo "ℹ️ No BBR commit found – BBR will NOT be patched (cubic default)."
           fi
 
           # msm_adreno_simple_ondemand
           GPU_COMMIT=$(git log --oneline --all --grep="simple_ondemand" -i | head -1 | awk '{print $1}')
           if [ -n "$GPU_COMMIT" ]; then
-            echo "Found simple_ondemand commit: $GPU_COMMIT"
+            echo "✅ simple_ondemand commit found: $GPU_COMMIT"
             git format-patch -1 $GPU_COMMIT -o ../patches
           else
-            echo "⚠️ No simple_ondemand commit found; skipping GPU patch."
+            echo "ℹ️ No simple_ondemand commit found – GPU governor will remain msm-adreno-tz."
           fi
 
-          echo "Patches extracted:"
-          ls -l ../patches/ 2>/dev/null || echo "No patch files generated."
+          echo "📁 Patches extracted (if any):"
+          ls -l ../patches/ 2>/dev/null || echo "(none)"
 
-      # Step 3: Apply patches to LOS kernel
-      - name: 🩹 Apply Patches to LineageOS Kernel
+      # Step 3: Apply patches STRICTLY – fail if any patch fails to apply
+      - name: 🩹 Apply Patches (strict mode)
         working-directory: kernel
         run: |
           if ls ../patches/*.patch 1> /dev/null 2>&1; then
             for patch in ../patches/*.patch; do
-              echo "Applying $patch"
-              git apply --check "$patch" && git apply "$patch" || echo "Patch $patch failed to apply; continuing."
+              echo "🔍 Checking $patch ..."
+              if git apply --check "$patch"; then
+                echo "✅ Patch can be applied cleanly. Applying..."
+                git apply "$patch"
+                echo "✔️ Applied: $patch"
+              else
+                echo "❌ ERROR: Patch $patch does not apply cleanly!"
+                echo "👉 Please check the patch file and your kernel source."
+                exit 1
+              fi
             done
           else
-            echo "No patches to apply."
+            echo "ℹ️ No patches to apply – continuing with stock source."
           fi
 
       # Step 4: Optimised defconfig
@@ -88,14 +97,14 @@ jobs:
           make ARCH=arm64 O=out $DEFCONFIG
           cd out
 
-          # Try enabling patched features (safe even if not present)
+          # Try enabling patched features (will only take effect if patches applied)
           scripts/config --enable CONFIG_IOSCHED_BFQ || true
           scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq" || true
           scripts/config --enable CONFIG_TCP_CONG_BBR || true
           scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr" || true
           scripts/config --enable CONFIG_MSM_ADRENO_SIMPLE_ONDEMAND || true
 
-          # --- Safe & battery/performance tweaks ---
+          # --- Safe & battery/performance tweaks (all safe) ---
           scripts/config --enable CONFIG_ZRAM
           scripts/config --enable CONFIG_ZRAM_LZ4_COMPRESS
           scripts/config --disable CONFIG_ZSWAP
@@ -137,7 +146,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             -j$(nproc --all)
 
-      # Step 6: Boot script with CPU/GPU/VM tuning
+      # Step 6: Boot script with CPU/GPU/VM tuning + runtime fallback
       - name: 📝 Create Complete Boot Tuning Script
         run: |
           mkdir -p anykernel/ramdisk/overlay.d/sbin
