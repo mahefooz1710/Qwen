@@ -12,118 +12,100 @@ jobs:
       LOS_KERNEL_REPO: https://github.com/LineageOS/android_kernel_xiaomi_jasmine_sprout.git
       LOS_KERNEL_BRANCH: lineage-18.1
       DEFCONFIG: jasmine_sprout_defconfig
-      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz
-      GCC32_URL: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz
       AK3_REPO: https://github.com/osm0sis/AnyKernel3.git
 
     steps:
-      - name: 📦 Install Dependencies
+      - name: 📦 Install Build Dependencies
         run: sudo apt-get update && sudo apt-get install -y flex bison build-essential libssl-dev bc wget git zip unzip
 
-      - name: 🔽 Download Toolchains
+      # ----- Reliable toolchain setup via git clone -----
+      - name: 🔽 Clone Clang toolchain (prebuilt)
         run: |
-          mkdir -p toolchain/clang toolchain/gcc32
-          wget -qO- $CLANG_URL | tar xz -C toolchain/clang
-          wget -qO- $GCC32_URL | tar xz -C toolchain/gcc32
+          mkdir -p toolchain/clang
+          git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86 toolchain/clang
+          # Remove unnecessary history & .git to save space
+          rm -rf toolchain/clang/.git
 
+      - name: 🔽 Clone GCC 32-bit toolchain (arm-linux-androideabi-4.9)
+        run: |
+          mkdir -p toolchain/gcc32
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 toolchain/gcc32
+          rm -rf toolchain/gcc32/.git
+
+      # ----- Kernel sources -----
       - name: 🌿 Clone Pixel Experience Kernel (full history)
         run: git clone -b $PE_KERNEL_BRANCH $PE_KERNEL_REPO pe_kernel
 
       - name: 🌿 Clone LineageOS Kernel
         run: git clone --depth=1 -b $LOS_KERNEL_BRANCH $LOS_KERNEL_REPO kernel
 
+      # ----- Extract all 3 patches (must succeed) -----
       - name: 🔍 Strictly Verify & Extract All 3 Patches
         working-directory: pe_kernel
         run: |
           mkdir -p ../patches
-
-          # BFQ
           BFQ_COMMIT=$(git log --oneline --all --grep="bfq" -i | head -1 | awk '{print $1}')
-          if [ -z "$BFQ_COMMIT" ]; then
-            echo "❌ ERROR: BFQ commit not found in PE kernel!"
-            exit 1
-          fi
+          [ -z "$BFQ_COMMIT" ] && echo "❌ BFQ commit not found!" && exit 1
           echo "✅ BFQ commit: $BFQ_COMMIT"
           git format-patch -1 $BFQ_COMMIT -o ../patches
 
-          # BBR
           BBR_COMMIT=$(git log --oneline --all --grep="bbr" -i | head -1 | awk '{print $1}')
-          if [ -z "$BBR_COMMIT" ]; then
-            echo "❌ ERROR: BBR commit not found in PE kernel!"
-            exit 1
-          fi
+          [ -z "$BBR_COMMIT" ] && echo "❌ BBR commit not found!" && exit 1
           echo "✅ BBR commit: $BBR_COMMIT"
           git format-patch -1 $BBR_COMMIT -o ../patches
 
-          # simple_ondemand
           GPU_COMMIT=$(git log --oneline --all --grep="simple_ondemand" -i | head -1 | awk '{print $1}')
-          if [ -z "$GPU_COMMIT" ]; then
-            echo "❌ ERROR: simple_ondemand commit not found in PE kernel!"
-            exit 1
-          fi
+          [ -z "$GPU_COMMIT" ] && echo "❌ simple_ondemand commit not found!" && exit 1
           echo "✅ simple_ondemand commit: $GPU_COMMIT"
           git format-patch -1 $GPU_COMMIT -o ../patches
 
-          echo "📁 All 3 patches extracted successfully."
           ls -l ../patches/
 
-      - name: 🩹 Apply All Patches (strict – fail on any error)
+      - name: 🩹 Apply All Patches (strict)
         working-directory: kernel
         run: |
           for patch in ../patches/*.patch; do
             echo "🔍 Checking $patch..."
-            if git apply --check "$patch"; then
-              echo "✅ Applying $patch"
-              git apply "$patch"
-            else
-              echo "❌ ERROR: Patch $patch cannot be applied cleanly."
-              exit 1
-            fi
+            git apply --check "$patch" || { echo "❌ Patch $patch fails"; exit 1; }
+            git apply "$patch"
+            echo "✅ Applied $patch"
           done
-          echo "✔️ All patches applied successfully."
 
+      # ----- Defconfig -----
       - name: ⚙️ Generate Fully Optimized Defconfig
         working-directory: kernel
         run: |
           make ARCH=arm64 O=out $DEFCONFIG
           cd out
-
-          # Enable patched features – now guaranteed to exist
           scripts/config --enable CONFIG_IOSCHED_BFQ
           scripts/config --set-str CONFIG_DEFAULT_IOSCHED "bfq"
           scripts/config --enable CONFIG_TCP_CONG_BBR
           scripts/config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
           scripts/config --enable CONFIG_MSM_ADRENO_SIMPLE_ONDEMAND
 
-          # --- Safe & Battery/Performance Tweaks ---
           scripts/config --enable CONFIG_ZRAM
           scripts/config --enable CONFIG_ZRAM_LZ4_COMPRESS
           scripts/config --disable CONFIG_ZSWAP
-
           scripts/config --enable CONFIG_MSM_WATCHDOG_V2 || true
           scripts/config --set-val CONFIG_PANIC_TIMEOUT 5
           scripts/config --enable CONFIG_DETECT_HUNG_TASK
           scripts/config --set-val CONFIG_DEFAULT_HUNG_TASK_TIMEOUT 120
-
           scripts/config --enable CONFIG_F2FS_FS
           scripts/config --enable CONFIG_EXT4_FS_POSIX_ACL
           scripts/config --enable CONFIG_FS_ENCRYPTION
-
           scripts/config --enable CONFIG_WQ_POWER_EFFICIENT_DEFAULT
           scripts/config --set-val CONFIG_HZ 300
-
           scripts/config --enable CONFIG_STRICT_KERNEL_RWX
           scripts/config --disable CONFIG_AUDIT
           scripts/config --disable CONFIG_MAGIC_SYSRQ
           scripts/config --disable CONFIG_DEBUG_KERNEL
           scripts/config --disable CONFIG_SLUB_DEBUG
-
           scripts/config --enable CONFIG_SND_SOC_MSM_QDSP6V2_INTF || true
           scripts/config --enable CONFIG_SND_SOC_MSM_QDSP6V2_VM || true
-
           cd ..
           make ARCH=arm64 O=out olddefconfig
 
+      # ----- Compile -----
       - name: 🔨 Compile Kernel
         working-directory: kernel
         env:
@@ -136,15 +118,14 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             -j$(nproc --all)
 
+      # ----- Boot script + packaging -----
       - name: 📝 Create Boot Tuning Script
         run: |
           mkdir -p anykernel/ramdisk/overlay.d/sbin
           cat << 'BOOTTWEAK' > anykernel/ramdisk/overlay.d/sbin/jasmine_tweaks.sh
           #!/system/bin/sh
           until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 1; done
-          # ZRAM 1GB
           [ -e /sys/block/zram0/disksize ] && echo 1073741824 > /sys/block/zram0/disksize
-          # I/O: BFQ (guaranteed present)
           for dev in /sys/block/mmcblk*/queue; do
             echo bfq > $dev/scheduler 2>/dev/null
             echo 0 > $dev/iostats 2>/dev/null
@@ -155,7 +136,6 @@ jobs:
           echo 5 > /proc/sys/vm/dirty_background_ratio
           echo 3 > /proc/sys/net/ipv4/tcp_fastopen
           echo NO_GENTLE_FAIR_SLEEPERS > /sys/kernel/debug/sched_features 2>/dev/null
-          # CPU interactive governor tuning
           for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo interactive > $cpu 2>/dev/null; done
           echo 90 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/go_hispeed_load 2>/dev/null
           echo 800000 > /sys/devices/system/cpu/cpu4/cpufreq/interactive/hispeed_freq 2>/dev/null
@@ -165,7 +145,6 @@ jobs:
           echo 600000 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/hispeed_freq 2>/dev/null
           echo 30000 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/timer_rate 2>/dev/null
           echo 0 > /sys/devices/system/cpu/cpu0/cpufreq/interactive/io_is_busy 2>/dev/null
-          # GPU min freq
           [ -e /sys/class/kgsl/kgsl-3d0/min_pwrlevel ] && echo 3 > /sys/class/kgsl/kgsl-3d0/min_pwrlevel 2>/dev/null
           exit 0
           BOOTTWEAK
@@ -190,7 +169,7 @@ jobs:
           zip -r9 ../MiA2_Ultimate_AllPatches_Kernel.zip *
           cd ..
 
-      - name: 📤 Upload Kernel Zip (v4)
+      - name: 📤 Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
           name: MiA2_Ultimate_AllPatches_Kernel
